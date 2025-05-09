@@ -23,33 +23,20 @@ def format_problem_type(problem_type: str) -> str:
     """Convert problem type from snake_case to Title Case with spaces."""
     return problem_type.replace('_', ' ').title()
 
-def generate_latex_table(results: List[Dict[str, Any]]) -> str:
-    """Generate LaTeX tables showing success rates for each problem."""
-    # Get models dynamically from results
-    models = get_models_from_results(results)
+def generate_latex_table(summary_stats: Dict[str, Any]) -> str:
+    """Generate LaTeX tables showing success rates for each problem using summary statistics."""
+    models = summary_stats["models"]
     if not models:
         return "No model results found."
     
+    # Calculate the number of queries per prompt (n)
+    queries_per_prompt = max(
+        int(round(summary_stats[model]["total_queries"] / summary_stats[model]["total_prompts"]))
+        for model in models
+    )
+    
     # Create model labels (A, B, C, etc.)
     model_labels = {model: chr(65 + i) for i, model in enumerate(models)}
-    
-    # Group results by type and prompt_idx
-    results_by_type = {}
-    for result in results:
-        problem_type = result.get('type', 'Unknown')
-        prompt_idx = result.get('prompt_idx', 0)
-        model_name = result.get('model_name')
-        is_equivalent = result.get('is_equivalent', False)
-        query_idx = result.get('query_idx', 0)
-        
-        if problem_type not in results_by_type:
-            results_by_type[problem_type] = {}
-        if prompt_idx not in results_by_type[problem_type]:
-            results_by_type[problem_type][prompt_idx] = {}
-        if model_name not in results_by_type[problem_type][prompt_idx]:
-            results_by_type[problem_type][prompt_idx][model_name] = []
-            
-        results_by_type[problem_type][prompt_idx][model_name].append(is_equivalent)
     
     # Generate one-shot success table
     latex = "\\begin{table}[h]\n"
@@ -59,23 +46,33 @@ def generate_latex_table(results: List[Dict[str, Any]]) -> str:
     latex += "\\textbf{Type} & \\textbf{Prompt} & " + " & ".join(f"\\textbf{{{label}}}" for label in model_labels.values()) + " \\\\\n"
     latex += "\\hline\n"
     
-    # Sort types alphabetically
-    for problem_type in sorted(results_by_type.keys()):
-        # Sort prompts within each type
-        for prompt_idx in sorted(results_by_type[problem_type].keys()):
-            row = f"{format_problem_type(problem_type)} & {prompt_idx}"
+    # Get all prompts from all models' prompt_breakdown
+    prompt_entries = set()
+    for model in models:
+        for prompt_key, prompt_stats in summary_stats[model]["prompt_breakdown"].items():
+            prompt_idx = int(prompt_key.split('_')[1])  # Extract number from "prompt_X"
+            prompt_entries.add((prompt_stats["problem_type"], prompt_idx))
+    
+    # Convert to list and sort by problem type and prompt index
+    prompt_entries = sorted(list(prompt_entries), key=lambda x: (x[0], x[1]))
+    
+    # Generate rows for each prompt
+    for problem_type, prompt_idx in prompt_entries:
+        row = f"{format_problem_type(problem_type)} & {prompt_idx}"
+        
+        # Add success/failure for each model
+        for model in models:
+            prompt_key = f"prompt_{prompt_idx}"
+            prompt_stats = summary_stats[model]["prompt_breakdown"].get(prompt_key, {})
+            success_rate = prompt_stats.get("success_rate", 0)
             
-            # Add success/failure for each model (all queries must be correct)
-            for model in models:
-                query_results = results_by_type[problem_type][prompt_idx].get(model, [])
-                all_correct = all(query_results) if query_results else False
-                if all_correct:
-                    row += " & \\cellcolor{successgreen!25}\\textcolor{black}{$\\checkmark$}"  # Success
-                else:
-                    row += " & \\cellcolor{failurered!25}\\textcolor{black}{$\\times$}"  # Failure
-            
-            row += " \\\\\n\\hline\n"
-            latex += row
+            if success_rate == 100:
+                row += " & \\cellcolor{successgreen!25}\\textcolor{black}{$\\checkmark$}"  # Success
+            else:
+                row += " & \\cellcolor{failurered!25}\\textcolor{black}{$\\times$}"  # Failure
+        
+        row += " \\\\\n\\hline\n"
+        latex += row
     
     # End one-shot table
     latex += "\\end{tabular}\n"
@@ -102,30 +99,27 @@ def generate_latex_table(results: List[Dict[str, Any]]) -> str:
     latex += "\\textbf{Type} & \\textbf{Prompt} & " + " & ".join(f"\\textbf{{{label}}}" for label in model_labels.values()) + " \\\\\n"
     latex += "\\hline\n"
     
-    # Sort types alphabetically
-    for problem_type in sorted(results_by_type.keys()):
-        # Sort prompts within each type
-        for prompt_idx in sorted(results_by_type[problem_type].keys()):
-            row = f"{format_problem_type(problem_type)} & {prompt_idx}"
+    # Use the same sorted prompt entries
+    for problem_type, prompt_idx in prompt_entries:
+        row = f"{format_problem_type(problem_type)} & {prompt_idx}"
+        
+        # Add percentage success for each model
+        for model in models:
+            prompt_key = f"prompt_{prompt_idx}"
+            prompt_stats = summary_stats[model]["prompt_breakdown"].get(prompt_key, {})
+            success_rate = prompt_stats.get("success_rate", 0)
             
-            # Add percentage success for each model
-            for model in models:
-                query_results = results_by_type[problem_type][prompt_idx].get(model, [])
-                if query_results:
-                    success_rate = (sum(query_results) / len(query_results)) * 100
-                    # Color based on success rate
-                    if success_rate >= 75:
-                        color = "successgreen!25"
-                    elif success_rate >= 50:
-                        color = "yellow!25"
-                    else:
-                        color = "failurered!25"
-                    row += f" & \\cellcolor{{{color}}}\\textcolor{{black}}{{{success_rate:.0f}\\%}}"
-                else:
-                    row += " & \\cellcolor{failurered!25}\\textcolor{black}{N/A}"
-            
-            row += " \\\\\n\\hline\n"
-            latex += row
+            # Color based on success rate
+            if success_rate >= 75:
+                color = "successgreen!25"
+            elif success_rate >= 50:
+                color = "yellow!25"
+            else:
+                color = "failurered!25"
+            row += f" & \\cellcolor{{{color}}}\\textcolor{{black}}{{{success_rate:.0f}\\%}}"
+        
+        row += " \\\\\n\\hline\n"
+        latex += row
     
     # End percentage table
     latex += "\\end{tabular}\n"
@@ -142,6 +136,90 @@ def generate_latex_table(results: List[Dict[str, Any]]) -> str:
     latex += "\\hline\n"
     latex += "\\end{tabular}\n"
     latex += "\\end{center}\n"
+    latex += "\\end{table}\n\n"
+
+    # Get all question types including "Overall"
+    question_types = ["Overall"] + sorted(summary_stats["question_types"])
+    
+    # Generate success rates table
+    latex += "\\begin{table}[h]\n"
+    latex += "\\centering\n"
+    latex += "\\begin{tabular}{|l|" + "|c" * len(question_types) + "|}\n"
+    latex += "\\hline\n"
+    latex += "\\textbf{Model} & " + " & ".join(f"\\textbf{{{format_problem_type(qt)}}}" for qt in question_types) + " \\\\\n"
+    latex += "\\hline\n"
+    
+    for model in models:
+        row = f"{model}"
+        # Add overall success rate
+        overall_rate = summary_stats[model]["overall_success_rate"]
+        row += f" & {overall_rate:.1f}"
+        
+        # Add success rates for each question type
+        for q_type in question_types[1:]:  # Skip "Overall"
+            q_type_stats = summary_stats[model]["question_type_breakdown"].get(q_type, {})
+            success_rate = q_type_stats.get("success_rate", 0)
+            row += f" & {success_rate:.1f}"
+        
+        row += " \\\\\n\\hline\n"
+        latex += row
+    
+    latex += "\\end{tabular}\n"
+    latex += "\\caption{Success Rates by Model and Question Type}\n"
+    latex += "\\end{table}\n\n"
+    
+    # Generate pass@1 rates table
+    latex += "\\begin{table}[h]\n"
+    latex += "\\centering\n"
+    latex += "\\begin{tabular}{|l|" + "|c" * len(question_types) + "|}\n"
+    latex += "\\hline\n"
+    latex += "\\textbf{Model} & " + " & ".join(f"\\textbf{{{format_problem_type(qt)}}}" for qt in question_types) + " \\\\\n"
+    latex += "\\hline\n"
+    
+    for model in models:
+        row = f"{model}"
+        # Add overall pass@1 rate
+        overall_rate = summary_stats[model]["overall_pass_at_1_rate"]
+        row += f" & {overall_rate:.1f}"
+        
+        # Add pass@1 rates for each question type
+        for q_type in question_types[1:]:  # Skip "Overall"
+            q_type_stats = summary_stats[model]["question_type_breakdown"].get(q_type, {})
+            pass_at_1_rate = q_type_stats.get("pass_at_1_rate", 0)
+            row += f" & {pass_at_1_rate:.1f}"
+        
+        row += " \\\\\n\\hline\n"
+        latex += row
+    
+    latex += "\\end{tabular}\n"
+    latex += "\\caption{Pass@1 Rates by Model and Question Type}\n"
+    latex += "\\end{table}\n\n"
+    
+    # Generate pass@n rates table
+    latex += "\\begin{table}[h]\n"
+    latex += "\\centering\n"
+    latex += "\\begin{tabular}{|l|" + "|c" * len(question_types) + "|}\n"
+    latex += "\\hline\n"
+    latex += "\\textbf{Model} & " + " & ".join(f"\\textbf{{{format_problem_type(qt)}}}" for qt in question_types) + " \\\\\n"
+    latex += "\\hline\n"
+    
+    for model in models:
+        row = f"{model}"
+        # Add overall pass@n rate
+        overall_rate = summary_stats[model]["overall_pass_at_n_rate"]
+        row += f" & {overall_rate:.1f}"
+        
+        # Add pass@n rates for each question type
+        for q_type in question_types[1:]:  # Skip "Overall"
+            q_type_stats = summary_stats[model]["question_type_breakdown"].get(q_type, {})
+            pass_at_n_rate = q_type_stats.get("pass_at_n_rate", 0)
+            row += f" & {pass_at_n_rate:.1f}"
+        
+        row += " \\\\\n\\hline\n"
+        latex += row
+    
+    latex += "\\end{tabular}\n"
+    latex += f"\\caption{{Pass@{queries_per_prompt} Rates by Model and Question Type}}\n"
     latex += "\\end{table}\n"
     
     return latex
@@ -200,7 +278,7 @@ def generate_full_results_summary(results: List[Dict[str, Any]]) -> str:
                     latex += "\\vspace{0.5em}\n\n"
                     
                     # Add full model response
-                    model_response = result.get('model_response', '')
+                    model_response = result["model_response"]
                     if model_response:
                         latex += "\\noindent\\textbf{{Full Model Response}}:\\par\n"
                         # Escape special LaTeX characters and preserve whitespace
@@ -212,7 +290,7 @@ def generate_full_results_summary(results: List[Dict[str, Any]]) -> str:
                         latex += f"\\noindent {model_response}\\par\n\\vspace{{1em}}\n\n"
                     
                     # Add model solution
-                    model_solution = result.get('model_latex_solution', [])
+                    model_solution = result["eval_result"].get("model", {}).get("extracted_solutions", [])
                     if model_solution:
                         latex += "\\noindent\\textbf{{Model Solution}}:\\par\n"
                         for solution in model_solution:
@@ -224,12 +302,11 @@ def generate_full_results_summary(results: List[Dict[str, Any]]) -> str:
                                 latex += "\\begin{equation*}\n"
                                 latex += solution + "\n"
                                 latex += "\\end{equation*}\n\n"
-                    
-                    # Add expected solution
-                    expected_solution = result.get('solution_latex', [])
-                    if expected_solution:
-                        latex += "\\noindent\\textbf{{Expected Solution}}:\\par\n"
-                        for solution in expected_solution:
+
+                    solution_latex = result["eval_result"]["solution"]["extracted_solutions"]
+                    if solution_latex:
+                        latex += "\\noindent\\textbf{{Solution}}:\\par\n"
+                        for solution in solution_latex:
                             # Clean up the solution and ensure it's properly formatted
                             solution = solution.strip()
                             if solution:
@@ -240,14 +317,20 @@ def generate_full_results_summary(results: List[Dict[str, Any]]) -> str:
                                 latex += "\\end{equation*}\n\n"
                     
                     # Add evaluation results
-                    model_eval = result.get('model_eval_result', [])
-                    solution_eval = result.get('solution_eval_result', [])
+                    model_eval = result["eval_result"].get("model", {}).get("evaluation_results", [])
+                    solution_eval = result["eval_result"].get("solution", {}).get("evaluation_results", [])
                     if model_eval and solution_eval:
                         latex += "\\noindent\\textbf{{Evaluation Results}}:\\par\n"
-                        # Escape any special characters in evaluation results
-                        model_eval = str(model_eval).replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
-                        solution_eval = str(solution_eval).replace('&', '\\&').replace('%', '\\%').replace('#', '\\#')
-                        latex += f"Model: {model_eval}, Expected: {solution_eval}\n\n"
+                        # Format evaluation results as a table
+                        latex += "\\begin{tabular}{ll}\n"
+                        latex += "\\hline\n"
+                        latex += "\\textbf{Model} & \\textbf{Expected} \\\\\n"
+                        latex += "\\hline\n"
+                        # Format each evaluation result
+                        for m_eval, s_eval in zip(model_eval, solution_eval):
+                            latex += f"{m_eval:.6f} & {s_eval:.6f} \\\\\n"
+                        latex += "\\hline\n"
+                        latex += "\\end{tabular}\n\n"
                     
                     # Add extra space between queries
                     latex += "\\vspace{0.5em}\n\n"
@@ -311,7 +394,7 @@ def generate_detailed_summary(results: List[Dict[str, Any]]) -> str:
                     latex += "\\vspace{0.5em}\n\n"
                     
                     # Add model solution
-                    model_solution = result.get('model_latex_solution', [])
+                    model_solution = result.get('model_solution_latex', [])
                     if model_solution:
                         latex += "\\noindent\\textbf{{Model Solution}}:\\par\n"
                         for solution in model_solution:
@@ -360,10 +443,20 @@ def main():
     # Read results from both JSON files
     results_dir = os.path.join(project_root, "results")
     
-    # Read summary results
-    summary_path = os.path.join(results_dir, "results.json")
+    # Check if summary.json exists, if not generate it first
+    summary_path = os.path.join(results_dir, "summary.json")
+    if not os.path.exists(summary_path):
+        from generate_summary import generate_summary
+        generate_summary()
+    
+    # Read summary statistics
     with open(summary_path, 'r') as f:
-        summary_results = json.load(f)
+        summary_stats = json.load(f)
+    
+    # Read results for detailed view
+    results_path = os.path.join(results_dir, "results.json")
+    with open(results_path, 'r') as f:
+        results = json.load(f)
     
     # Read full results
     full_path = os.path.join(results_dir, "full_results.json")
@@ -409,12 +502,12 @@ def main():
     
     # Add section for tables
     summary_latex += "\\section{Performance Tables}\n"
-    summary_latex += generate_latex_table(summary_results)
+    summary_latex += generate_latex_table(summary_stats)
     summary_latex += "\n\\newpage\n"
     
     # Add section for detailed results
     summary_latex += "\\section{Detailed Results}\n"
-    summary_latex += generate_detailed_summary(summary_results)
+    summary_latex += generate_detailed_summary(results)
     
     summary_latex += "\\end{document}\n"
     
@@ -456,7 +549,7 @@ def main():
     
     # Add section for tables
     full_latex += "\\section{Performance Tables}\n"
-    full_latex += generate_latex_table(summary_results)
+    full_latex += generate_latex_table(summary_stats)
     full_latex += "\n\\newpage\n"
     
     # Add section for full results
